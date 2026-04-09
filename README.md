@@ -121,6 +121,12 @@ yarn start
 
 默认端口为 `5001`。
 
+## 安全注意事项
+
+- 本地敏感配置应放在 `conf/.env`，该文件默认被 Git 忽略，不应提交。
+- 运行过程生成的审查日志数据库位于 `data/data.db`，也不应提交。
+- `conf/.env.dist` 只保留占位符示例，提交前不要把真实 API Key、GitLab Token 或 IM Webhook 地址写进仓库。
+
 ## Webhook 接入
 
 服务提供两个 HTTP 接口：

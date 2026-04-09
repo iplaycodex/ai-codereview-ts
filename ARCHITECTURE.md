@@ -4,194 +4,154 @@
 
 ```mermaid
 graph TB
-    subgraph GitLab
-        GL[GitLab Webhook]
+    subgraph GitLab Platform
+        GL_WH[GitLab Webhook]
         GL_API[GitLab API]
     end
 
-    subgraph Express Server :5001
-        ENTRY[index.ts<br/>dotenv + 启动]
-        APP[app.ts<br/>Express 工厂]
+    subgraph Service[Node.js / Express Service]
+        ENTRY[index.ts<br/>启动入口]
+        ROUTE[POST /review/webhook<br/>路由与参数解析]
+        HANDLER[Worker Handlers<br/>MR / Push 编排]
 
-        subgraph Routes
-            HEALTH[GET /<br/>健康检查]
-            WEBHOOK[POST /review/webhook<br/>GitLab Webhook 接收]
+        subgraph Review Pipeline
+            ADAPTER[GitLab Adapter<br/>MR Changes / Compare / Notes]
+            FILTER[变更过滤<br/>SUPPORTED_EXTENSIONS]
+            REVIEWER[CodeReviewer]
+            SANITIZER[CodeSanitizer]
+            TOKEN[Token Count / Truncate]
+            PROMPT[Prompt Loader<br/>YAML + Nunjucks]
+            FACTORY[LLM Factory]
+            PROVIDERS[OpenAI / DeepSeek / Anthropic / Qwen / ZhipuAI / Ollama / Codex]
         end
 
-        subgraph Worker
-            MR_HANDLER[handleMergeRequestEvent]
-            PUSH_HANDLER[handlePushEvent]
+        subgraph Result Fanout
+            EVENT[EventEmitter]
+            NOTE[GitLab Note 回写]
+            NOTIFY[IM Notifier]
+            STORE[ReviewService]
         end
 
-        subgraph GitLab Adapter
-            MR_H[MergeRequestHandler<br/>获取 Diff / Commits<br/>回写 Note / 保护分支]
-            PUSH_H[PushHandler<br/>Compare API / Commit Diff]
-            UTILS[filterChanges<br/>slugifyUrl]
-        end
-
-        subgraph LLM Engine
-            FACTORY[Factory<br/>工厂模式]
-            BASE[BaseClient<br/>ping + completions]
-            DS[DeepSeekClient]
-            OA[OpenAIClient]
-            AT[AnthropicClient]
-            QW[QwenClient]
-            ZP[ZhipuAIClient ✅]
-            OL[OllamaClient]
-
-            subgraph Review Core
-                REVIEWER[CodeReviewer<br/>Review + 评分]
-                PROMPT[prompt-loader<br/>YAML + Nunjucks]
-                TOKEN[token-util<br/>js-tiktoken]
-                SANITIZER[CodeSanitizer<br/>10 条脱敏规则]
-            end
-        end
-
-        subgraph Event System
-            EM[EventEmitter<br/>merge_request_reviewed<br/>push_reviewed]
-        end
-
-        subgraph IM Notifications
-            NOTIFIER[send_notification<br/>统一分发]
-            DT[钉钉<br/>HMAC-SHA256]
-            WC[企业微信<br/>UTF-8 分片]
-            FS[飞书<br/>交互式卡片]
-            WH[自定义 Webhook]
-        end
-
-        subgraph Data Layer
+        subgraph Infra
+            CONFIG[Env Config + Startup Check]
+            LOG[Winston Logger]
             DB[(SQLite<br/>data/data.db)]
-            SVC[ReviewService<br/>建表/插入/查询/去重]
         end
-
-        LOG[winston Logger<br/>文件轮转 + Console]
-        CONF[config/checker<br/>env 校验 + LLM 连通性]
     end
 
-    GL -->|Merge Request / Push| WEBHOOK
-    WEBHOOK --> MR_HANDLER
-    WEBHOOK --> PUSH_HANDLER
+    GL_WH --> ROUTE
+    ENTRY --> CONFIG
+    ENTRY --> ROUTE
+    ENTRY --> STORE
+    ROUTE --> HANDLER
 
-    MR_HANDLER --> MR_H
-    PUSH_HANDLER --> PUSH_H
-    MR_H --> UTILS
-    PUSH_H --> UTILS
-
-    MR_HANDLER --> REVIEWER
-    PUSH_HANDLER --> REVIEWER
+    HANDLER --> ADAPTER
+    ADAPTER --> FILTER
+    FILTER --> REVIEWER
     REVIEWER --> SANITIZER
-    REVIEWER --> PROMPT
     REVIEWER --> TOKEN
+    REVIEWER --> PROMPT
     REVIEWER --> FACTORY
+    FACTORY --> PROVIDERS
 
-    FACTORY --> DS & OA & AT & QW & ZP & OL
-    BASE -.->|extends| DS & OA & AT & QW & ZP & OL
+    HANDLER --> NOTE
+    HANDLER --> EVENT
+    ADAPTER --> GL_API
+    NOTE --> GL_API
 
-    MR_HANDLER --> EM
-    PUSH_HANDLER --> EM
+    EVENT --> NOTIFY
+    EVENT --> STORE
+    STORE --> DB
 
-    EM --> NOTIFIER
-    NOTIFIER --> DT & WC & FS & WH
-
-    EM --> SVC
-    SVC --> DB
-
-    MR_H -->|调用| GL_API
-    PUSH_H -->|调用| GL_API
-
-    ENTRY --> APP --> Routes
-    ENTRY --> CONF --> FACTORY
-    ENTRY --> SVC
+    ROUTE --> LOG
+    HANDLER --> LOG
+    ADAPTER --> LOG
+    REVIEWER --> LOG
 ```
 
-## 核心数据流
+## Merge Request 审查流程
 
 ```mermaid
 sequenceDiagram
     participant GL as GitLab
-    participant WH as POST /review/webhook
+    participant API as POST /review/webhook
+    participant H as handleMergeRequestEvent
     participant MR as MergeRequestHandler
     participant REV as CodeReviewer
-    participant LLM as ZhipuAI
+    participant LLM as Selected LLM
     participant EVT as EventEmitter
-    participant IM as IM 通知
+    participant IM as IM Notifier
     participant DB as SQLite
 
-    GL->>WH: Merge Request Webhook
-    WH->>WH: 解析 URL + Token
-    WH-->>GL: 200 OK (异步处理)
+    GL->>API: merge_request webhook
+    API->>API: 解析 GitLab URL / Token / object_kind
+    API-->>GL: 200 OK
 
-    WH->>MR: 创建 Handler
-    MR->>GL: GET MR Changes (3次重试)
-    GL-->>MR: Diff 数据
-    MR->>MR: filterChanges (扩展名过滤)
-    MR->>GL: GET MR Commits
-    GL-->>MR: Commit 列表
+    API->>H: 异步触发 MR 处理
+    H->>H: 草稿 / action / 保护分支 / 去重检查
+    H->>MR: 创建适配器
+    MR->>GL: GET MR changes
+    GL-->>MR: diff 数据
+    MR->>GL: GET MR commits
+    GL-->>MR: commit 列表
 
-    WH->>REV: reviewAndStripCode()
-    REV->>REV: 代码脱敏 (可选)
-    REV->>REV: Token 计数 + 截断
+    H->>REV: reviewAndStripCode(filteredDiffs, commits)
+    REV->>REV: 脱敏 / Token 统计 / 截断
     REV->>LLM: completions(messages)
-    LLM-->>REV: Review 结果
-    REV->>REV: 剥离 Markdown 围栏
-    REV->>REV: 提取评分 (正则)
+    LLM-->>REV: Markdown review result
+    REV-->>H: reviewResult + score
 
-    WH->>MR: addMergeRequestNotes()
-    MR->>GL: POST Note
-    GL-->>MR: 200 OK
+    H->>MR: addMergeRequestNotes()
+    MR->>GL: POST MR note
+    GL-->>MR: 201 Created
 
-    WH->>EVT: emit('merge_request_reviewed')
-    EVT->>IM: send_notification()
-    IM->>IM: 钉钉 / 企微 / 飞书 / Webhook
+    H->>EVT: emit('merge_request_reviewed')
+    EVT->>IM: sendNotification()
     EVT->>DB: insertMrReviewLog()
 ```
 
-## 目录结构映射
+## Push 审查流程
 
 ```mermaid
-graph LR
-    subgraph Python 原版
-        api_py[api.py]
-        biz_api[biz/api/]
-        biz_plat[biz/platforms/gitlab/]
-        biz_queue[biz/queue/worker.py]
-        biz_llm[biz/llm/]
-        biz_review[biz/utils/code_reviewer.py]
-        biz_san[biz/utils/sanitizer.py]
-        biz_im[biz/utils/im/]
-        biz_evt[biz/event/]
-        biz_svc[biz/service/]
-        biz_ent[biz/entity/]
-        biz_log[biz/utils/log.py]
-        ui_py[ui.py - Dashboard]
+sequenceDiagram
+    participant GL as GitLab
+    participant API as POST /review/webhook
+    participant H as handlePushEvent
+    participant PH as PushHandler
+    participant REV as CodeReviewer
+    participant LLM as Selected LLM
+    participant EVT as EventEmitter
+    participant DB as SQLite
+
+    GL->>API: push webhook
+    API-->>GL: 200 OK
+    API->>H: 异步触发 Push 处理
+    H->>PH: 创建适配器
+
+    alt 新分支创建
+        PH->>GL: GET commit diff(after)
+        GL-->>PH: diff 数据
+    else 普通 push
+        PH->>GL: GET repository compare(before, after)
+        GL-->>PH: compare diff 数据
+    else 分支删除
+        PH-->>H: 无需审查
     end
 
-    subgraph TypeScript 重构
-        idx[src/index.ts]
-        routes[src/routes/]
-        platform[src/platforms/gitlab/]
-        worker[src/worker/]
-        llm[src/llm/]
-        review[src/review/]
-        sanitizer[src/sanitizer/]
-        im[src/im/]
-        events[src/events/]
-        service[src/service/]
-        entity[src/entity/]
-        logger[src/logger/]
-    end
+    H->>REV: reviewAndStripCode(filteredDiffs, commits)
+    REV->>LLM: completions(messages)
+    LLM-->>REV: review result
+    REV-->>H: reviewResult + score
 
-    api_py --> idx
-    biz_api --> routes
-    biz_plat --> platform
-    biz_queue --> worker
-    biz_llm --> llm
-    biz_review --> review
-    biz_san --> sanitizer
-    biz_im --> im
-    biz_evt --> events
-    biz_svc --> service
-    biz_ent --> entity
-    biz_log --> logger
-    ui_py -.->|已移除| x[❌]
+    H->>PH: addPushNotes()
+    PH->>GL: POST commit / push note
+    H->>EVT: emit('push_reviewed')
+    EVT->>DB: insertPushReviewLog()
 ```
+
+## 设计要点
+
+- Webhook 接口快速返回，实际审查在后台异步执行，降低 GitLab 超时风险。
+- `worker` 只负责流程编排，GitLab API、LLM、通知、存储都被拆到独立模块，便于替换和测试。
+- Prompt、模型 Provider、文件过滤规则都在配置层可切换，不需要改主流程。
+- 审查结果同时进入三条出口：GitLab Note、IM 通知、SQLite 日志，便于协作和追踪。
