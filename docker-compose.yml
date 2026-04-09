@@ -1,0 +1,12 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./data:/app/data
+      - ./log:/app/log
+    env_file: ./conf/.env
+    restart: unless-stopped
