@@ -12,10 +12,10 @@ graph TB
     subgraph Service[Node.js / Express Service]
         ENTRY[index.ts<br/>启动入口]
         ROUTE[POST /review/webhook<br/>路由与参数解析]
-        HANDLER[Worker Handlers<br/>MR / Push 编排]
+        HANDLER[MR Handler<br/>Merge Request 编排]
 
         subgraph Review Pipeline
-            ADAPTER[GitLab Adapter<br/>MR Changes / Compare / Notes]
+            ADAPTER[GitLab Adapter<br/>MR Changes / Commits / Notes]
             FILTER[变更过滤<br/>SUPPORTED_EXTENSIONS]
             REVIEWER[CodeReviewer]
             SANITIZER[CodeSanitizer]
@@ -110,48 +110,9 @@ sequenceDiagram
     EVT->>DB: insertMrReviewLog()
 ```
 
-## Push 审查流程
-
-```mermaid
-sequenceDiagram
-    participant GL as GitLab
-    participant API as POST /review/webhook
-    participant H as handlePushEvent
-    participant PH as PushHandler
-    participant REV as CodeReviewer
-    participant LLM as Selected LLM
-    participant EVT as EventEmitter
-    participant DB as SQLite
-
-    GL->>API: push webhook
-    API-->>GL: 200 OK
-    API->>H: 异步触发 Push 处理
-    H->>PH: 创建适配器
-
-    alt 新分支创建
-        PH->>GL: GET commit diff(after)
-        GL-->>PH: diff 数据
-    else 普通 push
-        PH->>GL: GET repository compare(before, after)
-        GL-->>PH: compare diff 数据
-    else 分支删除
-        PH-->>H: 无需审查
-    end
-
-    H->>REV: reviewAndStripCode(filteredDiffs, commits)
-    REV->>LLM: completions(messages)
-    LLM-->>REV: review result
-    REV-->>H: reviewResult + score
-
-    H->>PH: addPushNotes()
-    PH->>GL: POST commit / push note
-    H->>EVT: emit('push_reviewed')
-    EVT->>DB: insertPushReviewLog()
-```
-
 ## 设计要点
 
 - Webhook 接口快速返回，实际审查在后台异步执行，降低 GitLab 超时风险。
-- `worker` 只负责流程编排，GitLab API、LLM、通知、存储都被拆到独立模块，便于替换和测试。
+- `worker` 只负责 MR 流程编排，GitLab API、LLM、通知、存储都被拆到独立模块，便于替换和测试。
 - Prompt、模型 Provider、文件过滤规则都在配置层可切换，不需要改主流程。
 - 审查结果同时进入三条出口：GitLab Note、IM 通知、SQLite 日志，便于协作和追踪。

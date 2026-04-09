@@ -1,15 +1,15 @@
 # ai-codereview-ts
 
-一个面向 GitLab Webhook 的 AI 代码评审服务，使用 TypeScript + Express 实现，负责接收 Merge Request 和 Push 事件、拉取变更、调用大模型生成审查意见、回写 GitLab 评论，并把结果同步到 IM 通知和本地 SQLite 日志。
+一个面向 GitLab Merge Request Webhook 的 AI 代码评审服务，使用 TypeScript + Express 实现，负责接收 MR 事件、拉取变更、调用大模型生成审查意见、回写 GitLab 评论，并把结果同步到 IM 通知和本地 SQLite 日志。
 
 ## 项目主要内容
 
-- GitLab Webhook 接入：支持 `merge_request` 和 `push` 两类事件。
+- GitLab Webhook 接入：仅处理 `merge_request` 事件。
 - AI 评审链路：拉取 diff 和 commits，过滤可审查文件，按提示词生成评审结果并提取评分。
 - 多模型适配：支持 `deepseek`、`openai`、`anthropic`、`qwen`、`zhipuai`、`ollama`、`codex`。
 - 结果回写：把 AI Review 结果作为 Note 回写到 GitLab。
 - 通知分发：支持钉钉、企业微信、飞书和额外自定义 Webhook。
-- 本地持久化：使用 `sql.js` 将 MR / Push 审查日志写入 `data/data.db`。
+- 本地持久化：使用 `sql.js` 将 Merge Request 审查日志写入 `data/data.db`。
 - 安全处理：支持代码脱敏、Token 截断、按扩展名过滤变更。
 
 ## 架构设计
@@ -25,9 +25,9 @@
 - `src/routes/`
   HTTP 路由层。对外暴露健康检查和 `/review/webhook`，负责解析 GitLab URL、Token 和事件类型。
 - `src/worker/handlers.ts`
-  业务编排层。分别处理 MR 和 Push 事件，做草稿过滤、受保护分支判断、去重、调用评审器和发送事件。
+  业务编排层。处理 MR 事件，做草稿过滤、受保护分支判断、去重、调用评审器和发送事件。
 - `src/platforms/gitlab/`
-  GitLab 适配层。封装 Merge Request / Push 相关 API，包括拉取 changes、commits、compare diff、回写 notes。
+  GitLab 适配层。封装 Merge Request 相关 API，包括拉取 changes、commits、判断受保护分支和回写 notes。
 - `src/review/`
   评审核心。加载 YAML 提示词模板、执行代码脱敏、统计 token、截断长 diff、解析评分。
 - `src/llm/`
@@ -40,7 +40,7 @@
 ## 关键设计点
 
 - 异步处理 Webhook：接口收到请求后先快速返回，再在后台执行评审，避免阻塞 GitLab。
-- 双事件模型：MR 走变更审查和 MR Note 回写，Push 走 compare / commit diff 逻辑和 Push Note 回写。
+- 单事件模型：只处理 MR 审查链路，避免 Push 事件进入评审流程。
 - 文件过滤优先：只对 `SUPPORTED_EXTENSIONS` 中的文件做审查，避免无关 diff 浪费上下文。
 - Prompt 外置：提示词位于 `conf/prompt_templates.yml`，不用改代码就能调审查风格。
 - Provider 解耦：上层只依赖 `Factory.getClient()`，切模型不影响业务编排。
@@ -100,7 +100,6 @@ OPENAI_API_KEY=your_api_key
 OPENAI_API_MODEL=gpt-4o-mini
 GITLAB_URL=https://gitlab.example.com
 GITLAB_ACCESS_TOKEN=your_gitlab_token
-PUSH_REVIEW_ENABLED=1
 MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED=0
 ```
 
@@ -138,7 +137,7 @@ yarn start
 
 Webhook 处理规则：
 
-- 仅支持 `merge_request` 和 `push`。
+- 仅处理 `merge_request`。
 - MR 草稿状态不会触发 AI 审查，只发通知。
 - 可选只审查受保护分支的 MR。
 - 支持从环境变量、请求头或 payload 推断 GitLab 实例地址。
@@ -156,14 +155,6 @@ Webhook 处理规则：
 6. 将结果回写为 GitLab MR Note。
 7. 发送 IM 通知并写入 SQLite。
 
-### Push
-
-1. 接收 GitLab `push` Webhook。
-2. 根据 `before` / `after` 判断是普通 push、分支创建还是删除。
-3. 使用 compare API 或 commit diff API 获取变更。
-4. 执行 AI 审查并回写 Push Note。
-5. 发送通知并写入 SQLite。
-
 ## 通知与持久化
 
 - IM 通知渠道：
@@ -174,7 +165,7 @@ Webhook 处理规则：
 - SQLite 数据文件：
   - 默认路径：`data/data.db`
 - 持久化字段：
-  - 项目名、作者、分支、更新时间、提交信息、评分、评审结果、增删行数
+  - 项目名、作者、源分支、目标分支、更新时间、提交信息、评分、评审结果、增删行数
 
 ## Prompt 与审查风格
 
@@ -201,6 +192,6 @@ Webhook 处理规则：
 
 ## 已知边界
 
-- 当前 Webhook 入口面向 GitLab，不是 GitHub App / GitHub Webhook 方案。
+- 当前 Webhook 入口面向 GitLab Merge Request，不是 GitHub App / GitHub Webhook 方案。
 - `sql.js` 适合轻量单机部署，不适合高并发多实例共享写入。
 - 配置检查会尝试连接 LLM，离线环境下启动日志会出现连通性失败提示。

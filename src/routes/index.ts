@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { URL } from 'url';
 import { slugifyUrl } from '../platforms/gitlab/utils';
-import { handleMergeRequestEvent, handlePushEvent } from '../worker/handlers';
+import { handleMergeRequestEvent } from '../worker/handlers';
 import { config } from '../config';
 import logger from '../logger';
 
@@ -58,15 +58,10 @@ https://github.com/iplaycodex/ai-codereview-ts</a></p>`);
         logger.error(`MR handler error: ${(e as Error).message}`);
       });
       res.json({ message: `Request received(object_kind=${objectKind}), will process asynchronously.` });
-    } else if (objectKind === 'push') {
-      handlePushEvent(data, gitlabToken, gitlabUrl, gitlabUrlSlug).catch((e) => {
-        logger.error(`Push handler error: ${(e as Error).message}`);
-      });
-      res.json({ message: `Request received(object_kind=${objectKind}), will process asynchronously.` });
     } else {
-      const errorMsg = `Only merge_request and push events are supported, but received: ${objectKind}.`;
-      logger.error(errorMsg);
-      res.status(400).json({ error: errorMsg });
+      const message = `Event ignored. Only merge_request is supported, but received: ${objectKind}.`;
+      logger.info(message);
+      res.json({ message });
     }
   });
 
