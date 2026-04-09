@@ -11,8 +11,8 @@ export function registerRoutes(app: import('express').Application): void {
   // Health check
   router.get('/', (_req: Request, res: Response) => {
     res.send(`<h2>The code review api server is running.</h2>
-<p>GitHub project address: <a href="https://github.com/sunmh207/AI-Codereview-Gitlab" target="_blank">
-https://github.com/sunmh207/AI-Codereview-Gitlab</a></p>`);
+<p>GitHub project address: <a href="https://github.com/iplaycodex/ai-codereview-ts" target="_blank">
+https://github.com/iplaycodex/ai-codereview-ts</a></p>`);
   });
 
   // Webhook endpoint - GitLab only
